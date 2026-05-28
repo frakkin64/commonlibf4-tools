@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <span>
 #include <map>
 #include <memory>
 #include <optional>
@@ -21,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include <mmio/mmio.hpp>
 #pragma warning(pop)
 
 using namespace std::literals;
@@ -73,8 +75,19 @@ public:
 		return result;
 	}
 
+	[[nodiscard]] bool get_is_source() const
+	{
+		return is_source;
+	}
+
+	void set_is_source(bool a_is_source) const
+	{
+		is_source = a_is_source;
+	}
+
 private:
 	std::array<value_type, 4> _impl{ 0, 0, 0, 0 };
+	mutable bool is_source = false;
 };
 
 [[nodiscard]] constexpr bool operator==(const Version& a_lhs, const Version& a_rhs) noexcept { return a_lhs.compare(a_rhs) == 0; }
@@ -206,9 +219,8 @@ using version_map = std::map<Version, offset_map>;
 	return map;
 }
 
-void assign_ids(version_map& a_versionMap)
+void assign_ids(version_map& a_versionMap, std::uint64_t id)
 {
-	std::uint64_t id = 0;
 	for (auto& [ver, offsetMap] : a_versionMap) {
 		for (auto& [offset, mapping] : offsetMap) {
 			if (!mapping.assigned()) {
@@ -230,6 +242,9 @@ void write_binaries(version_map& a_versionMap)
 	std::string                                    filename;
 	std::vector<std::pair<std::uint64_t, Mapping>> mappings;
 	for (const auto& [ver, offsetMap] : a_versionMap) {
+		if (ver.get_is_source())
+			continue;
+
 		filename = "version-"sv;
 		filename += ver.string();
 		filename += ".bin"sv;
@@ -260,11 +275,58 @@ void write_binaries(version_map& a_versionMap)
 	}
 }
 
+std::uint64_t load_addresslib(version_map& a_versionMap)
+{
+	struct Pair
+	{
+		std::uint64_t id;
+		std::uint64_t offset;
+	};
+
+	const auto find_address = [](offset_map& a_map, uint64_t a_address) -> Mapping* {
+		auto it = a_map.find(a_address);
+		return (it == a_map.end()) ? nullptr : &(it->second);
+	};
+
+	std::uint64_t last_id = 0;
+
+	for (auto& [ver, offsetMap] : a_versionMap) {
+		mmio::mapped_file_source input;
+		std::string filename;
+		filename = "version-"sv;
+		filename += ver.string();
+		filename += ".bin"sv;
+		if (!input.open(filename)) {
+			continue;
+		}
+
+		ver.set_is_source(true);
+
+		std::span data(
+			reinterpret_cast<const Pair*>(input.data() + sizeof(std::uint64_t)),
+			*reinterpret_cast<const std::uint64_t*>(input.data()));
+		if (!data.empty()) {
+			for (const auto& [id, offset] : data) {
+				if (auto* mapping = find_address(offsetMap, offset)) {
+					mapping->assign(id);
+				}
+
+				last_id = std::max(last_id, id);
+			}
+		}
+
+		input.close();
+	}
+
+	return last_id;
+}
+
 int main()
 {
 	try {
 		auto mappings = load_mappings(get_files("mappings"sv));
-		assign_ids(mappings);
+		auto last_id = load_addresslib(mappings);
+		assign_ids(mappings, ++last_id);
 		write_binaries(mappings);
 	} catch (const std::exception& e) {
 		std::cerr << e.what() << std::endl;

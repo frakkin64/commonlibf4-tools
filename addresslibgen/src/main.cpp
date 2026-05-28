@@ -296,7 +296,9 @@ std::uint64_t load_addresslib(version_map& a_versionMap)
 		filename = "version-"sv;
 		filename += ver.string();
 		filename += ".bin"sv;
-		if (!input.open(filename)) {
+
+		std::filesystem::path path = std::filesystem::path("seeds") / filename;
+		if (!input.open(path.string())) {
 			continue;
 		}
 

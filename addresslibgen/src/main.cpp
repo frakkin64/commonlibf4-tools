@@ -275,7 +275,7 @@ void write_binaries(version_map& a_versionMap)
 	}
 }
 
-std::uint64_t load_addresslib(version_map& a_versionMap)
+std::optional<std::uint64_t> load_addresslib(version_map& a_versionMap)
 {
 	struct Pair
 	{
@@ -288,7 +288,7 @@ std::uint64_t load_addresslib(version_map& a_versionMap)
 		return (it == a_map.end()) ? nullptr : &(it->second);
 	};
 
-	std::uint64_t last_id = 0;
+	std::optional<std::uint64_t> last_id;
 
 	for (auto& [ver, offsetMap] : a_versionMap) {
 		mmio::mapped_file_source input;
@@ -310,10 +310,12 @@ std::uint64_t load_addresslib(version_map& a_versionMap)
 		if (!data.empty()) {
 			for (const auto& [id, offset] : data) {
 				if (auto* mapping = find_address(offsetMap, offset)) {
-					mapping->assign(id);
+					if (!mapping->assigned()) {
+						mapping->assign(id);
+					}
 				}
 
-				last_id = std::max(last_id, id);
+				last_id = std::max(last_id, std::optional<std::uint64_t>(id));
 			}
 		}
 
@@ -328,7 +330,9 @@ int main()
 	try {
 		auto mappings = load_mappings(get_files("mappings"sv));
 		auto last_id = load_addresslib(mappings);
-		assign_ids(mappings, ++last_id);
+		if (last_id)
+			(*last_id)++;
+		assign_ids(mappings, last_id.value_or(0));
 		write_binaries(mappings);
 	} catch (const std::exception& e) {
 		std::cerr << e.what() << std::endl;

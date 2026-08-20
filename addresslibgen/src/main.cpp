@@ -40,6 +40,8 @@ public:
 		_impl(a_version)
 	{}
 
+	[[nodiscard]] constexpr std::size_t size() const noexcept { return _impl.size(); }
+
 	[[nodiscard]] constexpr reference       operator[](std::size_t a_idx) noexcept { return _impl[a_idx]; }
 	[[nodiscard]] constexpr const_reference operator[](std::size_t a_idx) const noexcept { return _impl[a_idx]; }
 
@@ -130,26 +132,31 @@ using files_t = std::vector<std::tuple<Version, Version, std::filesystem::path>>
 [[nodiscard]] files_t get_files(const std::filesystem::path& a_root)
 {
 	files_t     results;
-	std::wregex regex(L"(\\d+)\\.(\\d+)\\.(\\d+)_(\\d+)\\.(\\d+)\\.(\\d+)\\.txt"s, std::regex::ECMAScript);
+	std::wregex regex(L"(\\d+)\\.(\\d+)\\.(\\d+)(?:\\.(\\d+))?_(\\d+)\\.(\\d+)\\.(\\d+)(?:\\.(\\d+))?\\.txt"s, std::regex::ECMAScript);
 	for (const auto& entry : std::filesystem::directory_iterator(a_root)) {
 		if (entry.is_regular_file()) {
 			const auto   filename = entry.path().filename();
 			std::wsmatch matches;
-			if (std::regex_match(filename.native(), matches, regex) && matches.size() == 7) {
+			if (std::regex_match(filename.native(), matches, regex) && matches.size() == 9) {
 				results.emplace_back();
 				auto& [lversion, rversion, path] = results.back();
 
 				const auto extract = [&]<std::size_t I>(std::in_place_index_t<I>) {
-					return static_cast<std::uint16_t>(std::stoull(matches[I]));
+					if (!matches[I].matched)
+						return static_cast<std::uint16_t>(0);
+					else
+						return static_cast<std::uint16_t>(std::stoull(matches[I]));
 				};
 
 				lversion[0] = extract(std::in_place_index<1>);
 				lversion[1] = extract(std::in_place_index<2>);
 				lversion[2] = extract(std::in_place_index<3>);
+				lversion[3] = extract(std::in_place_index<4>);
 
-				rversion[0] = extract(std::in_place_index<4>);
-				rversion[1] = extract(std::in_place_index<5>);
-				rversion[2] = extract(std::in_place_index<6>);
+				rversion[0] = extract(std::in_place_index<5>);
+				rversion[1] = extract(std::in_place_index<6>);
+				rversion[2] = extract(std::in_place_index<7>);
+				rversion[3] = extract(std::in_place_index<8>);
 
 				path = entry.path();
 			}
@@ -325,10 +332,52 @@ std::optional<std::uint64_t> load_addresslib(version_map& a_versionMap)
 	return last_id;
 }
 
+void load_unmatched(version_map& a_versionMap)
+{
+	const auto find_or_emplace_address = [](offset_map& a_map, std::string a_address) -> Mapping& {
+		auto address = static_cast<std::uint64_t>(std::stoull(a_address, 0, 16));
+		address -= 0x140000000;
+		auto it = a_map.find(address);
+		if (it == a_map.end()) {
+			it = a_map.emplace(address, Mapping()).first;
+		}
+		return it->second;
+	};
+
+	for (auto& [ver, offsetMap] : a_versionMap) {
+		std::ifstream     file;
+		std::string filename;
+		for (std::size_t i = 0; i < ver.size(); ++i) {
+			filename += std::to_string(ver[i]);
+			filename += '.';
+		}
+		filename.pop_back();
+		filename += ".txt"sv;
+
+		std::filesystem::path path = std::filesystem::path("unmatched") / filename;
+		file.open(path);
+		if (!file.is_open()) {
+			continue;
+		}
+
+		std::string       line;
+		while (std::getline(file, line)) {
+			if (line.empty()) {
+				continue;
+			}
+
+			find_or_emplace_address(offsetMap, line);
+		}
+
+		file.close();
+	}
+}
+
 int main()
 {
 	try {
 		auto mappings = load_mappings(get_files("mappings"sv));
+		load_unmatched(mappings);
 		auto last_id = load_addresslib(mappings);
 		if (last_id)
 			(*last_id)++;
